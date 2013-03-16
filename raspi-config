@@ -136,9 +136,37 @@ do_overscan() {
 }
 
 do_change_pass() {
-  whiptail --msgbox "You will now be asked to enter a new password for the pi user" 20 60 1
-  passwd pi &&
-  whiptail --msgbox "Password changed successfully" 20 60 1
+	for i in root `ls /home/` ; do
+		whiptail --msgbox "You will now be asked to enter a new password for the $i user" 20 60 1
+  		passwd $i &&
+  		whiptail --msgbox "Password for $i changed successfully" 20 60 1
+	done
+	if [ -e `ls /home | grep -v 'lost+found'` ] ; then
+		whiptail --yesno "No unprivileged users found on your system \n Would you like to create one now? " 20 60 2
+		if [ $? = 0 ] ; then
+			NEWUSER=$(whiptail --inputbox 'Enter a name for the new user:' 20 60 raspberry 3>&1 1>&2 2>&3)
+			adduser "$NEWUSER"
+		fi
+	fi
+}
+
+do_join_groups(){
+	PI_USER=$(whiptail --inputbox 'Enter the name of the user you want to edit:' 20 60 raspberry 3>&1 1>&2 2>&3)
+	STATUS=''
+	LIST=''
+	for i in `cat /etc/group | awk -F':' '{ print $1 }'` ; do LIST="$LIST $i $i off " ;  done
+	GROUPADD=$(whiptail --checklist --notags 'Select aditional user groups from the list:' 30 60 12 --cancel-button Cancel --ok-button Select $LIST 3>&1 1>&2 2>&3)
+
+	join_selected(){
+		percent=`expr 100 / "$#"`
+		for i in $@ ; do
+			gpasswd -a $PI_USER $i
+			STATUS=`expr $STATUS + $percent`
+			echo $STATUS
+		done
+		sleep 2
+	}
+	join_selected $GROUPADD | whiptail --gauge 'Please Wait' 5 50 0
 }
 
 do_configure_keyboard() {
@@ -412,7 +440,8 @@ while true; do
     "expand_rootfs" "Expand root partition to fill SD card" \
     "overscan" "Change overscan" \
     "configure_keyboard" "Set keyboard layout" \
-    "change_pass" "Change password for 'pi' user" \
+    "change_pass" "Change passwords for system users" \
+    "join_groups" 'Join extra user groups' \
     "change_locale" "Set locale" \
     "change_timezone" "Set timezone" \
     "memory_split" "Change memory split" \
