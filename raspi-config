@@ -135,38 +135,158 @@ do_overscan() {
   fi
 }
 
+do_join_groups(){
+	if [ -e $2 ] ; then
+        	PI_USER=$(whiptail --inputbox 'Enter the name of the user you want to edit:' 20 60 raspberry 3>&1 1>&2 2>&3)
+		echo "NEWUSER=$PI_USER" > /tmp/raspi-temp.tmp
+	else
+		PI_USER=$2
+	fi
+        STATUS=''
+        LIST=''
+	ON=`grep "$PI_USER" /etc/group | awk -F':' '{ print $1 }'`
+	OFF=`grep -v "$PI_USER" /etc/group | awk -F':' '{ print $1 }'` 
+        for i in $ON ; do LIST="$LIST $i $i on " ;  done
+	for i in $OFF ; do LIST="$LIST $i $i off " ;  done
+        GROUPADD=$(whiptail --checklist --notags 'Select aditional user groups from the list:' 20 60 12 --cancel-button Cancel --ok-button Select $LIST 3>&1 1>&2 2>&3)
+		if [ $? != 0 ] ; then
+			return 1
+		fi
+        join_selected(){
+                percent=`expr 100 / "$#"`
+                for i in $@ ; do
+			ITEM=`echo $i | tr -d '"'`
+                        gpasswd -a $PI_USER $ITEM
+                        STATUS=`expr $STATUS + $percent`
+                        echo $STATUS
+                done
+                sleep 2
+        }
+        if [ $1 = useradd ] ; then
+		echo "NEWUSER=$PI_USER" > /tmp/raspi-temp.tmp
+		FIRST=0
+                for i in $GROUPADD ; do
+			ITEM=`echo $i | tr -d '"'`
+			if [ $FIRST = 0 ] ; then
+				GRP_LIST="$ITEM"
+				FIRST=1
+			else
+	                	GRP_LIST="$GRP_LIST,$ITEM"
+			fi
+                done
+        else
+                join_selected $GROUPADD | whiptail --gauge 'Please Wait' 5 50 0
+        fi
+}
+
 do_change_pass() {
 	for i in root `ls /home/` ; do
-		whiptail --msgbox "You will now be asked to enter a new password for the $i user" 20 60 1
-  		passwd $i &&
-  		whiptail --msgbox "Password for $i changed successfully" 20 60 1
+		whiptail --yesno "Do you want to enter a new password for the $i user" 20 60 1
+		if [ $? = 0 ] ; then
+			clear
+  			passwd $i &&
+  			whiptail --msgbox "Password for $i changed successfully" 20 60 1
+		fi
 	done
 	if [ -e `ls /home | grep -v 'lost+found'` ] ; then
 		whiptail --yesno "No unprivileged users found on your system \n Would you like to create one now? " 20 60 2
 		if [ $? = 0 ] ; then
-			NEWUSER=$(whiptail --inputbox 'Enter a name for the new user:' 20 60 raspberry 3>&1 1>&2 2>&3)
-			adduser "$NEWUSER"
+			do_join_groups useradd
+		fi
+		ask_for_passwd(){
+			NEW_PASSWD=$(whiptail --passwordbox 'Enter a password for the new user:' 20 60 3>&1 1>&2 2>&3)
+			CHK_PASSWD=$(whiptail --passwordbox 'Enter the password again:' 20 60 3>&1 1>&2 2>&3)
+
+			echo "NEW_PASSWD=$NEW_PASSWD" >> /tmp/raspi-temp.tmp
+			echo "CHK_PASSWD=$CHK_PASSWD" >> /tmp/raspi-temp.tmp
+		}
+		ask_for_passwd
+		if [ "$NEW_PASSWD" != "$CHK_PASSWD" ] ; then
+                       	return 1
+		fi
+		{
+		. /tmp/raspi-temp.tmp
+		echo 75
+		useradd -m -U -G $GRP_LIST -s /bin/bash	-p "$NEW_PASSWD" $NEWUSER &&
+		echo 100
+		} | whiptail --gauge 'Please Wait' 5 50 50
+		if [ $? = 0 ] ; then
+			whiptail --msgbox "Successfully added new user: $NEWUSER" 20 60 1
+		else
+			return 1
 		fi
 	fi
 }
 
-do_join_groups(){
-	PI_USER=$(whiptail --inputbox 'Enter the name of the user you want to edit:' 20 60 raspberry 3>&1 1>&2 2>&3)
-	STATUS=''
-	LIST=''
-	for i in `cat /etc/group | awk -F':' '{ print $1 }'` ; do LIST="$LIST $i $i off " ;  done
-	GROUPADD=$(whiptail --checklist --notags 'Select aditional user groups from the list:' 30 60 12 --cancel-button Cancel --ok-button Select $LIST 3>&1 1>&2 2>&3)
+deluser(){
+	USERS=`ls /home | grep -v 'lost+found'`
+	if [ -e $USERS ] ; then
+		return 1
+	fi
+	for i in $USERS ; do
+		LIST="$LIST $i $i off"
+	done
+	DELMENU=$(whiptail --checklist "Raspi-Config - Delete User" 20 80 12 --notags --cancel-button Cancel --ok-button Select $LIST 3>&1 1>&2 2>&3)
 
-	join_selected(){
-		percent=`expr 100 / "$#"`
-		for i in $@ ; do
-			gpasswd -a $PI_USER $i
-			STATUS=`expr $STATUS + $percent`
-			echo $STATUS
+	if [ -e "$DELMENU" ] ; then
+		return 1
+	else
+		whiptail --yesno 'Do you also want to remove the users home directory? This will permanently remove all personal files, settings and emails!' 20 60
+		if [ $? = 0 ] ; then
+			UD_OPTIONS='-r'
+		else
+			UD_OPTIONS=''
+		fi
+		{
+		echo 75
+		for user in $DELMENU ; do
+			user=`echo $user | tr -d '"'`
+			userdel $UD_OPTIONS $user
+			if [ $? != 0 ] ; then
+				return 1
+			fi
+			echo 99
 		done
-		sleep 2
-	}
-	join_selected $GROUPADD | whiptail --gauge 'Please Wait' 5 50 0
+		echo 100
+		} | whiptail --gauge 'Please Wait' 5 50 50
+		whiptail --title 'Raspi-Config - Delete User' --msgbox 'Selected users have been deleted from your system!' 20 60
+
+	fi
+}
+
+add_user(){
+	ask_for_passwd(){
+			do_join_groups useradd
+		        NEW_PASSWD=$(whiptail --passwordbox 'Enter a password for the new user:' 20 60 3>&1 1>&2 2>&3)
+                        CHK_PASSWD=$(whiptail --passwordbox 'Enter the password again:' 20 60 3>&1 1>&2 2>&3)
+
+                        echo "NEW_PASSWD=$NEW_PASSWD" >> /tmp/raspi-temp.tmp
+                        echo "CHK_PASSWD=$CHK_PASSWD" >> /tmp/raspi-temp.tmp
+                }
+                ask_for_passwd
+                if [ "$NEW_PASSWD" != "$CHK_PASSWD" ] ; then
+                        return 1
+                fi
+                {
+                . /tmp/raspi-temp.tmp
+                echo 75
+                useradd -m -U -G $GRP_LIST -s /bin/bash -p "$NEW_PASSWD" $NEWUSER &&
+                echo 100
+                } | whiptail --gauge 'Please Wait' 5 50 50
+                if [ $? = 0 ] ; then
+                        whiptail --msgbox "Successfully added new user: $NEWUSER" 20 60 1
+                else
+                        return 1
+                fi
+}
+
+do_manage_user(){
+	TASK=$(whiptail --menu "Raspi-config" 20 80 12 --notags --cancel-button Cancel --ok-button Select \
+    "add_user" "Add a new user to the system" \
+    "deluser" "Remove a user from the system" \
+    3>&1 1>&2 2>&3)
+
+    $TASK
 }
 
 do_configure_keyboard() {
@@ -365,16 +485,25 @@ do_boot_behaviour() {
 }
 
 do_update() {
-  apt-get update &&
-  apt-get install raspi-config &&
-  printf "Sleeping 5 seconds before reloading raspi-config\n" &&
-  sleep 5 &&
-  exec raspi-config
+	cd /usr/src
+	if [ -d raspi-config ] ; then
+		cd raspi-config
+		git pull
+		install /usr/src/raspi-config/raspi-config /remasterpi/bin/
+	else
+		git clone git://github.com/socialdefect/raspi-config.git
+		install /usr/src/raspi-config/raspi-config /remasterpi/bin/
+	fi
+	exec raspi-config
 }
 
 do_finish() {
   if [ -e /etc/profile.d/raspi-config.sh ]; then
     rm -f /etc/profile.d/raspi-config.sh
+    ## Clean Temp Files
+    if [ -f /tmp/raspi* ] ; then
+        rm -rvf /tmp/raspi*
+    fi
     sed -i /etc/inittab \
       -e "s/^#\(.*\)#\s*RPICFG_TO_ENABLE\s*/\1/" \
       -e "/#\s*RPICFG_TO_DISABLE/d"
@@ -435,12 +564,13 @@ fi
 # Interactive use loop
 #
 while true; do
-  FUN=$(whiptail --menu "Raspi-config" 20 80 12 --cancel-button Finish --ok-button Select \
+  FUN=$(whiptail --menu "Raspi-config" 20 80 12 --notags --cancel-button Finish --ok-button Select \
     "info" "Information about this tool" \
     "expand_rootfs" "Expand root partition to fill SD card" \
     "overscan" "Change overscan" \
     "configure_keyboard" "Set keyboard layout" \
     "change_pass" "Change passwords for system users" \
+    "manage_user" "Add/Delete Users" \
     "join_groups" 'Join extra user groups' \
     "change_locale" "Set locale" \
     "change_timezone" "Set timezone" \
@@ -459,3 +589,10 @@ while true; do
     exit 1
   fi
 done
+
+## Clean Temp Files
+if [ -f /tmp/raspi* ] ; then
+	rm -rvf /tmp/raspi*
+fi
+
+exit 0
